@@ -576,10 +576,7 @@ void ScreenRecoveryUI::draw_foreground_locked() {
   }
 }
 
-/* recovery dark:  #7C4DFF
-   recovery light: #F890FF
-   fastbootd dark: #E65100
-   fastboot light: #FDD835 */
+/* lavender: #dbe3fb */
 void ScreenRecoveryUI::SetColor(UIElement e) const {
   switch (e) {
     case UIElement::BATTERY_LOW:
@@ -589,35 +586,23 @@ void ScreenRecoveryUI::SetColor(UIElement e) const {
         gr_color(0xc7, 0x15, 0x85, 255);
       break;
     case UIElement::INFO:
-      if (fastbootd_logo_enabled_)
-        gr_color(0xfd, 0xd8, 0x35, 255);
-      else
-        gr_color(0xf8, 0x90, 0xff, 255);
+        gr_color(220, 229, 255, 255);
       break;
     case UIElement::HEADER:
-      if (fastbootd_logo_enabled_)
-        gr_color(0xfd, 0xd8,0x35, 255);
-      else
-        gr_color(0xf8, 0x90, 0xff, 255);
+        gr_color(220, 229, 255, 255);
       break;
     case UIElement::MENU:
       gr_color(0xd8, 0xd8, 0xd8, 255);
       break;
     case UIElement::MENU_SEL_BG:
     case UIElement::SCROLLBAR:
-      if (fastbootd_logo_enabled_)
-        gr_color(0xe6, 0x51, 0x00, 255);
-      else
-        gr_color(0x7c, 0x4d, 0xff, 255);
+        gr_color(220, 229, 255, 255);
       break;
     case UIElement::MENU_SEL_BG_ACTIVE:
       gr_color(0, 156, 100, 255);
       break;
     case UIElement::MENU_SEL_FG:
-      if (fastbootd_logo_enabled_)
-        gr_color(0, 0, 0, 255);
-      else
-        gr_color(0xd8, 0xd8, 0xd8, 255);
+        gr_color(23, 27, 42, 255);
       break;
     case UIElement::LOG:
       gr_color(196, 196, 196, 255);
@@ -834,7 +819,7 @@ void ScreenRecoveryUI::draw_menu_and_text_buffer_locked(
   int y = margin_height_;
 
   if (menu_) {
-    auto& logo = fastbootd_logo_enabled_ ? fastbootd_logo_ : lineage_logo_;
+    auto& logo = fastbootd_logo_enabled_ ? fastbootd_logo_ : default_logo;
     auto logo_width = gr_get_width(logo.get());
     auto logo_height = gr_get_height(logo.get());
     auto centered_x = ScreenWidth() / 2 - logo_width / 2;
@@ -882,10 +867,10 @@ void ScreenRecoveryUI::draw_menu_and_text_buffer_locked(
 // Draws the battery capacity on the screen. Should only be called with updateMutex locked.
 void ScreenRecoveryUI::draw_battery_capacity_locked() {
   int x;
-  int y = margin_height_ + gr_get_height(lineage_logo_.get());
-  int icon_x, icon_y, icon_h, icon_w;
 
-  if (is_battery_less) return;
+  int y = margin_height_ + gr_get_height(default_logo.get());
+
+  int icon_x, icon_y, icon_h, icon_w;
 
   // Battery status
   std::string batt_capacity = std::to_string(batt_capacity_) + '%';
@@ -954,6 +939,7 @@ void ScreenRecoveryUI::update_progress_locked() {
   gr_flip();
 }
 
+#define BATT_MONITOR_INIT_RETRY_MAX 10
 void ScreenRecoveryUI::BattMonitorThreadLoop() {
   using aidl::android::hardware::health::BatteryStatus;
   using android::hardware::health::InitHealthdConfig;
@@ -963,6 +949,7 @@ void ScreenRecoveryUI::BattMonitorThreadLoop() {
 
   auto batt_monitor = std::make_unique<android::BatteryMonitor>();
   batt_monitor->init(config.get());
+  int retry_count = 0;
 
   bool is_first_call = true;
 
@@ -1001,6 +988,15 @@ void ScreenRecoveryUI::BattMonitorThreadLoop() {
       // situation, use 100 as a fake battery percentage.
       if (status != android::OK) {
         prop.valueInt64 = 100;
+        if (retry_count++ < BATT_MONITOR_INIT_RETRY_MAX) {
+          LOG(WARNING) << "Retry count for reinitialization:" << retry_count;
+          if (redraw) update_screen_locked();
+
+          // Try reinit
+          batt_monitor->init(config.get());
+          std::this_thread::sleep_for(100ms);
+          continue;
+        }
       }
 
       int32_t batt_capacity = static_cast<int32_t>(prop.valueInt64);
@@ -1188,14 +1184,12 @@ bool ScreenRecoveryUI::Init(const std::string& locale) {
   no_command_text_ = LoadLocalizedBitmap("no_command_text");
   error_text_ = LoadLocalizedBitmap("error_text");
 
+  default_logo = LoadBitmap("logo_image");
   back_icon_ = LoadBitmap("ic_back");
   back_icon_sel_ = LoadBitmap("ic_back_sel");
   if (android::base::GetBoolProperty("ro.boot.dynamic_partitions", false) ||
       android::base::GetBoolProperty("ro.fastbootd.available", false)) {
-    lineage_logo_ = LoadBitmap("logo_image_switch");
     fastbootd_logo_ = LoadBitmap("fastbootd");
-  } else {
-    lineage_logo_ = LoadBitmap("logo_image");
   }
 
   // Background text for "installing_update" could be "installing update" or
@@ -1206,10 +1200,8 @@ bool ScreenRecoveryUI::Init(const std::string& locale) {
 
   LoadAnimation();
 
-  is_battery_less = android::base::GetBoolProperty("ro.recovery.batteryless", false);
-  if (!is_battery_less)
-    // Keep the battery capacity updated.
-    batt_monitor_thread_ = std::thread(&ScreenRecoveryUI::BattMonitorThreadLoop, this);
+  // Keep the battery capacity updated.
+  batt_monitor_thread_ = std::thread(&ScreenRecoveryUI::BattMonitorThreadLoop, this);
 
   // Keep the progress bar updated, even when the process is otherwise busy.
   progress_thread_ = std::thread(&ScreenRecoveryUI::ProgressThreadLoop, this);
@@ -1397,11 +1389,9 @@ void ScreenRecoveryUI::ShowFile(FILE* fp) {
           continue;
         }
         if (evt.key() == KEY_POWER || evt.key() == KEY_ENTER || evt.key() == KEY_BACKSPACE ||
-            evt.key() == KEY_BACK || evt.key() == KEY_HOMEPAGE ||
-            evt.key() == KEY_ESC || evt.key() == KEY_LEFTMETA || evt.key() == KEY_RIGHTMETA) {
+            evt.key() == KEY_BACK || evt.key() == KEY_HOME || evt.key() == KEY_HOMEPAGE) {
           return;
-        } else if (evt.key() == KEY_UP || evt.key() == KEY_VOLUMEUP || evt.key() == KEY_SCROLLUP ||
-                   evt.key() == KEY_PAGEUP) {
+        } else if (evt.key() == KEY_UP || evt.key() == KEY_VOLUMEUP || evt.key() == KEY_SCROLLUP) {
           if (offsets.size() <= 1) {
             show_prompt = true;
           } else {
@@ -1530,8 +1520,8 @@ int ScreenRecoveryUI::SelectMenu(const Point& p) {
   if (menu_) {
     if (!menu_->IsMain()) {
       // Back arrow hitbox
-      const static int logo_width = gr_get_width(lineage_logo_.get());
-      const static int logo_height = gr_get_height(lineage_logo_.get());
+      const static int logo_width = gr_get_width(default_logo.get());
+      const static int logo_height = gr_get_height(default_logo.get());
       const static int icon_w = gr_get_width(back_icon_.get());
       const static int icon_h = gr_get_height(back_icon_.get());
       const static int centered_x = ScreenWidth() / 2 - logo_width / 2;
@@ -1625,12 +1615,6 @@ size_t ScreenRecoveryUI::ShowMenu(std::unique_ptr<Menu>&& menu, bool menu_only,
           break;
         case Device::kHighlightDown:
           selected = SelectMenu(++selected);
-          break;
-        case Device::kHighlightFirst:
-          selected = SelectMenu(0);
-          break;
-        case Device::kHighlightLast:
-          selected = SelectMenu(menu_->ItemsCount() - 1);
           break;
         case Device::kScrollUp:
           selected = ScrollMenu(-1);
